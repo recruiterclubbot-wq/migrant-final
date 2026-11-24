@@ -1,0 +1,8 @@
+{
+  "name": "Remix Remix Remix MIGRANT24.11 19.00 — Международное агентство занятости",
+  "description": "Официальное трудоустройство за рубежом, проверенные вакансии в Европе и подбор персонала для бизнеса.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

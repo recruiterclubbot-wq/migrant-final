@@ -1,0 +1,308 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // Global Hardened Helpers
+    // ------------------------------------------------------------------
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerified() && request.auth.token.email in ['otzyvtyt@gmail.com', 'recruiterclub.bot@gmail.com'];
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerified() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOptionalString(data, key, maxLen) {
+      return !(key in data) || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    function isBoundedStringList(listVal, maxItems, maxItemLen) {
+      return listVal is list
+        && listVal.size() <= maxItems
+        && (listVal.size() == 0 || (listVal[0] is string && listVal[0].size() <= maxItemLen));
+    }
+
+    // ------------------------------------------------------------------
+    // Validation Blueprints
+    // ------------------------------------------------------------------
+    function isValidVacancy(data) {
+      return data.keys().hasAll([
+          'title', 'country', 'countryCode', 'profession',
+          'salaryText', 'salaryMonthlyText', 'schedule', 'housing',
+          'contractType', 'description', 'iconType', 'active',
+          'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'title', 'country', 'countryCode', 'profession',
+          'salaryText', 'salaryMonthlyText', 'schedule', 'housing',
+          'contractType', 'description', 'iconType', 'active',
+          'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && data.title is string && data.title.size() >= 2 && data.title.size() <= 120
+        && data.country is string && data.country.size() >= 2 && data.country.size() <= 60
+        && data.countryCode in ['DE', 'PL', 'CZ', 'UA', 'NL', 'LT', 'EU']
+        && data.profession is string && data.profession.size() >= 2 && data.profession.size() <= 80
+        && data.salaryText is string && data.salaryText.size() >= 2 && data.salaryText.size() <= 60
+        && data.salaryMonthlyText is string && data.salaryMonthlyText.size() >= 2 && data.salaryMonthlyText.size() <= 60
+        && data.schedule is string && data.schedule.size() >= 2 && data.schedule.size() <= 80
+        && data.housing is string && data.housing.size() >= 2 && data.housing.size() <= 80
+        && data.contractType is string && data.contractType.size() >= 2 && data.contractType.size() <= 80
+        && data.description is string && data.description.size() >= 10 && data.description.size() <= 1500
+        && data.iconType in ['plumbing', 'painting', 'warehouse', 'manufacturing', 'logistics', 'support', 'construction']
+        && data.active is bool
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll([
+          'uid', 'email', 'fullName', 'accountType', 'role', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'email', 'fullName', 'phone', 'companyName',
+          'accountType', 'desiredCountry', 'bio', 'role', 'status',
+          'savedVacancyIds', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == userId
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120
+        && isOptionalString(data, 'phone', 40)
+        && isOptionalString(data, 'companyName', 120)
+        && data.accountType in ['candidate', 'employer']
+        && isOptionalString(data, 'desiredCountry', 60)
+        && isOptionalString(data, 'bio', 600)
+        && data.role in ['candidate', 'employer', 'admin']
+        && data.status in ['active', 'blocked']
+        && (!('savedVacancyIds' in data) || isBoundedStringList(data.savedVacancyIds, 20, 128))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAdminGrant(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'grantedBy', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'email', 'grantedBy', 'createdAt'])
+        && isValidId(data.uid)
+        && data.uid == userId
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && isValidId(data.grantedBy)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidApplication(data) {
+      return data.keys().hasAll(['userId', 'type', 'fullName', 'phone', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'userId', 'type', 'vacancyId', 'vacancyTitle',
+          'fullName', 'phone', 'email', 'country',
+          'companyName', 'staffCount', 'comment',
+          'status', 'adminNote', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.userId)
+        && data.type in ['job_application', 'b2b_request', 'consultation']
+        && isOptionalString(data, 'vacancyId', 128)
+        && isOptionalString(data, 'vacancyTitle', 140)
+        && data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 120
+        && data.phone is string && data.phone.size() >= 5 && data.phone.size() <= 40
+        && isOptionalString(data, 'email', 160)
+        && isOptionalString(data, 'country', 60)
+        && isOptionalString(data, 'companyName', 120)
+        && isOptionalString(data, 'staffCount', 40)
+        && isOptionalString(data, 'comment', 1000)
+        && data.status in ['new', 'in_progress', 'approved', 'rejected']
+        && isOptionalString(data, 'adminNote', 500)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidLead(data) {
+      return data.keys().hasAll(['type', 'fullName', 'phone', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'type', 'vacancyId', 'vacancyTitle',
+          'fullName', 'phone', 'country',
+          'companyName', 'staffCount', 'comment',
+          'status', 'adminNote', 'createdAt', 'updatedAt'
+        ])
+        && data.type in ['job_application', 'b2b_request', 'consultation']
+        && isOptionalString(data, 'vacancyId', 128)
+        && isOptionalString(data, 'vacancyTitle', 140)
+        && data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 120
+        && data.phone is string && data.phone.size() >= 5 && data.phone.size() <= 40
+        && isOptionalString(data, 'country', 60)
+        && isOptionalString(data, 'companyName', 120)
+        && isOptionalString(data, 'staffCount', 40)
+        && isOptionalString(data, 'comment', 1000)
+        && data.status in ['new', 'in_progress', 'approved', 'rejected']
+        && isOptionalString(data, 'adminNote', 500)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // ------------------------------------------------------------------
+    // Collection Rules
+    // ------------------------------------------------------------------
+
+    // 1. Public Job Vacancies
+    match /vacancies/{vacancyId} {
+      allow get: if isValidId(vacancyId);
+      allow list: if true;
+      allow create: if isAdmin()
+        && isValidId(vacancyId)
+        && isValidVacancy(incoming())
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(vacancyId)
+        && isValidVacancy(incoming())
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'country', 'countryCode', 'profession',
+          'salaryText', 'salaryMonthlyText', 'schedule', 'housing',
+          'contractType', 'description', 'iconType', 'active', 'updatedAt'
+        ]);
+      allow delete: if isAdmin() && isValidId(vacancyId);
+    }
+
+    // 2. User Profiles (Strict PII Isolation)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isVerified()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().role in ['candidate', 'employer']
+        && incoming().status == 'active'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            isVerified()
+            && isOwner(userId)
+            && existing().status == 'active'
+            && incoming().role == existing().role
+            && incoming().status == existing().status
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'fullName', 'phone', 'companyName', 'accountType',
+              'desiredCountry', 'bio', 'savedVacancyIds', 'updatedAt'
+            ])
+          )
+          ||
+          (
+            isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'fullName', 'phone', 'companyName', 'accountType',
+              'desiredCountry', 'bio', 'role', 'status', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    // 3. Trusted Admin Grants
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isAdmin()
+        && isValidId(userId)
+        && isValidAdminGrant(incoming(), userId)
+        && incoming().grantedBy == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    // 4. Authenticated User Applications
+    match /applications/{applicationId} {
+      allow get: if isValidId(applicationId) && (
+        isAdmin() || (isSignedIn() && existing().userId == request.auth.uid)
+      );
+      allow list: if isAdmin() || (
+        isSignedIn() && resource.data.userId == request.auth.uid
+      );
+      allow create: if isVerified()
+        && isValidId(applicationId)
+        && isValidApplication(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().status == 'new'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(applicationId)
+        && isValidApplication(incoming())
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (existing().status in ['new', 'in_progress'] || isAdmin())
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'adminNote', 'updatedAt'
+        ]);
+      allow delete: if isAdmin() && isValidId(applicationId);
+    }
+
+    // 5. Public Guest Leads (Write-Only for Guests, Full Management for Admins)
+    match /leads/{leadId} {
+      allow get: if isValidId(leadId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(leadId)
+        && isValidLead(incoming())
+        && incoming().status == 'new'
+        && !('adminNote' in incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(leadId)
+        && isValidLead(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (existing().status in ['new', 'in_progress'] || isAdmin())
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'adminNote', 'updatedAt'
+        ]);
+      allow delete: if isAdmin() && isValidId(leadId);
+    }
+  }
+}
